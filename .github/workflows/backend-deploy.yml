@@ -102,18 +102,40 @@ jobs:
         echo "Node.js compatibility check passed"
     
     - name: Run server tests
-      timeout-minutes: 10
+      timeout-minutes: 20
       run: |
         echo "=== Starting server tests ==="
         cd server
         
+        # Install all dependencies
+        echo "Installing dependencies..."
+        npm ci
+        
         # Install test dependencies
+        echo "Installing test dependencies..."
         npm install --save-dev jest-junit
         
-        # Run tests with coverage
-        npm test -- --ci --reporters=default --reporters=jest-junit
+        # List all files for debugging
+        echo "\n=== Directory structure ==="
+        find . -type f | sort
         
+        # Run tests with maximum verbosity
+        echo "\n=== Running tests with maximum verbosity ==="
+        npx jest --detectOpenHandles --forceExit --verbose --runInBand --logHeapUsage
+        
+        # If we get here, tests passed
         echo "\n=== All tests completed successfully ==="
+        
+        # Save test results
+        echo "\n=== Saving test results ==="
+        mkdir -p test-results/jest
+        npx jest --ci --reporters=default --reporters=jest-junit --testResultsProcessor="jest-junit"
+        
+        # Show test results
+        if [ -f "junit.xml" ]; then
+          echo "\n=== Test Results ==="
+          cat junit.xml
+        fi
     
     - name: Check server health endpoint
       timeout-minutes: 5
