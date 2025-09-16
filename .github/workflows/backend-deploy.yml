@@ -104,20 +104,22 @@ jobs:
     - name: Run server tests
       timeout-minutes: 10
       run: |
-        echo "Running server tests..."
+        echo "=== Starting server tests ==="
         cd server
         echo "Node version: $(node --version)"
         echo "NPM version: $(npm --version)"
         echo "Jest version: $(npx jest --version)"
-        echo "Starting tests with verbose output..."
         
-        # Run tests with more detailed output
-        if npx jest --detectOpenHandles --forceExit --verbose; then
-          echo "Tests completed successfully"
-        else
-          echo "Tests failed"
-          exit 1
-        fi
+        # List test files for debugging
+        echo "\n=== Test files found ==="
+        find . -name '*.test.js' -o -name '*.spec.js' | sort
+        
+        # Run tests with maximum verbosity
+        echo "\n=== Running tests with maximum verbosity ==="
+        npx jest --detectOpenHandles --forceExit --verbose --runInBand --logHeapUsage
+        
+        # If we get here, tests passed
+        echo "\n=== All tests completed successfully ==="
     
     - name: Check server health endpoint
       timeout-minutes: 5
