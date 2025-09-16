@@ -1,0 +1,26 @@
+{
+  "name": "oil-drilling-ai-platform",
+  "version": "1.0.0",
+  "description": "AI SaaS platform for well drilling data management",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && npm run dev",
+    "client": "cd client && npm start",
+    "build": "cd client && npm run build",
+    "start": "cd server && npm start",
+    "install-all": "npm install && cd client && npm install && cd ../server && npm install",
+    "test:client": "cd client && npm test -- --coverage --watchAll=false",
+    "test:server": "cd server && npm test",
+    "test:e2e": "npx playwright test",
+    "test:e2e:headed": "npx playwright test --headed",
+    "test:e2e:ui": "npx playwright test --ui",
+    "test": "npm run test:client && npm run test:server"
+  },
+  "keywords": ["oil", "drilling", "ai", "saas", "data-visualization"],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
