@@ -61,7 +61,7 @@ jobs:
   build-and-deploy:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master'
     permissions:
       contents: write
       pages: write
@@ -97,20 +97,35 @@ jobs:
       - name: Build client
         id: build
         env:
-          # Set API base URL for production (GitHub Pages). Configure this in repo settings -> Variables -> Actions -> PAGES_API_BASE
-          REACT_APP_API_BASE: ${{ vars.PAGES_API_BASE }}
+          REACT_APP_API_BASE_URL: ${{ vars.REACT_APP_API_BASE_URL || 'http://localhost:5000' }}
+          GENERATE_SOURCEMAP: 'false'
         run: |
+          echo "Starting client build process..."
           cd client
-          echo "Starting build process..."
-          echo "Current directory: $(pwd)"
-          echo "Directory contents before build:"
-          ls -la
+          
+          # Install dependencies
+          echo "Installing dependencies..."
+          npm ci
+          
+          # Build the application
+          echo "Building application..."
           if npm run build; then
             echo "Build successful"
+            
+            # Create a simple 404.html for client-side routing (updated)
+            echo "Creating 404.html for client-side routing..."
+            echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Redirecting...</title><script>var path=window.location.pathname;window.location.href="/?redirect="+encodeURIComponent(path);</script></head><body>Redirecting...</body></html>' > build/404.html
+            
+            # Verify build output
+            echo "Build directory contents:"
+            ls -la build/
+            
+            # Set output for next steps
             echo "::set-output name=build_status::success"
           else
             echo "Build failed"
             echo "::set-output name=build_status::failure"
+            
             # Output error logs if available
             if [ -f "npm-debug.log" ]; then
               echo "NPM Debug Log:"
@@ -156,17 +171,18 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
-        
+
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v3
         with:
+          # Upload only the built client files
           path: './client/build'
-          
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./client/build
-          # This ensures proper routing in a subdirectory
-          destination_dir: .
+
+      - name: Show deployment status
+        run: |
+          echo "Deployment status: ${{ steps.deployment.outcome }}"
+          echo "Preview URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
