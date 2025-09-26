@@ -1,13 +1,54 @@
-import React, { useState } from 'react';
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, X, Plus, RefreshCw } from 'lucide-react';
 import axios from 'axios';
 import { apiUrl } from '../api';
 
-const FileUpload = ({ onFileUpload }) => {
+const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onFileUpload }) => {
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
   const [uploadedFile, setUploadedFile] = useState(null);
+  const [wellMode, setWellMode] = useState(() => {
+    if (selectedWell) return 'existing';
+    return wells.length > 0 ? 'existing' : 'new';
+  });
+  const [selectedWellId, setSelectedWellId] = useState(selectedWell?.id || '');
+  const [newWellName, setNewWellName] = useState('');
+  const [newWellDepth, setNewWellDepth] = useState('');
+  const [newWellStatus, setNewWellStatus] = useState('Active');
+  const [wellSaving, setWellSaving] = useState(false);
+  const [wellError, setWellError] = useState(null);
+  const [recentUploads, setRecentUploads] = useState([]);
+  const [loadingUploads, setLoadingUploads] = useState(false);
+
+  useEffect(() => {
+    if (selectedWell?.id) {
+      setSelectedWellId(selectedWell.id);
+      setWellMode('existing');
+    }
+  }, [selectedWell]);
+
+  useEffect(() => {
+    if (!selectedWell && wells.length > 0 && wellMode === 'new') {
+      setWellMode('existing');
+    }
+  }, [wells, selectedWell, wellMode]);
+
+  useEffect(() => {
+    const fetchRecentUploads = async () => {
+      try {
+        setLoadingUploads(true);
+        const { data } = await axios.get(apiUrl('/api/uploads'));
+        setRecentUploads(data);
+      } catch (error) {
+        console.error('Error loading uploads:', error);
+      } finally {
+        setLoadingUploads(false);
+      }
+    };
+
+    fetchRecentUploads();
+  }, []);
 
   const handleDrag = (e) => {
     e.preventDefault();
@@ -35,6 +76,11 @@ const FileUpload = ({ onFileUpload }) => {
     }
   };
 
+  const resetUploadState = () => {
+    setUploadedFile(null);
+    setUploadStatus(null);
+  };
+
   const handleFile = async (file) => {
     if (!file.name.toLowerCase().endsWith('.xlsx') && !file.name.toLowerCase().endsWith('.xls')) {
       setUploadStatus({
@@ -44,12 +90,59 @@ const FileUpload = ({ onFileUpload }) => {
       return;
     }
 
+    if (wellMode === 'existing' && !selectedWellId) {
+      setUploadStatus({
+        type: 'error',
+        message: 'Please choose a well to associate with this data or create a new well.'
+      });
+      return;
+    }
+
+    let associatedWellId = selectedWellId;
+
+    if (wellMode === 'new') {
+      if (!newWellName.trim() || !newWellDepth) {
+        setWellError('Please provide a name and depth for the new well.');
+        return;
+      }
+
+      try {
+        setWellSaving(true);
+        setWellError(null);
+        const { data: createdWell } = await axios.post(apiUrl('/api/wells'), {
+          name: newWellName,
+          depth: Number(newWellDepth),
+          status: newWellStatus
+        });
+
+        associatedWellId = createdWell.id;
+        setSelectedWellId(createdWell.id);
+        setWellMode('existing');
+        if (onWellCreated) {
+          onWellCreated(createdWell);
+        }
+        if (onSelectWell) {
+          onSelectWell(createdWell);
+        }
+      } catch (error) {
+        console.error('Error creating well:', error);
+        setWellError(error.response?.data?.error || 'Failed to create well. Please try again.');
+        setWellSaving(false);
+        return;
+      } finally {
+        setWellSaving(false);
+      }
+    }
+
     setUploading(true);
     setUploadStatus(null);
     setUploadedFile(file);
 
     const formData = new FormData();
     formData.append('file', file);
+    if (associatedWellId) {
+      formData.append('wellId', associatedWellId);
+    }
 
     try {
       const response = await axios.post(apiUrl('/api/upload'), formData, {
@@ -58,14 +151,42 @@ const FileUpload = ({ onFileUpload }) => {
         },
       });
 
+      const uploadResult = response.data;
+
       setUploadStatus({
         type: 'success',
-        message: 'File uploaded and processed successfully!'
+        message: associatedWellId
+          ? 'File uploaded, persisted, and linked to the selected well.'
+          : 'File uploaded and persisted successfully.'
       });
 
-      // Call the callback with the processed data
+      if (uploadResult.fileId) {
+        try {
+          const persisted = await axios.get(apiUrl(`/api/uploads/${uploadResult.fileId}/data`));
+          uploadResult.rows = persisted.data.rows;
+          uploadResult.statistics = persisted.data.statistics;
+        } catch (fetchError) {
+          console.error('Error confirming persisted data:', fetchError);
+        }
+      }
+
+      if (associatedWellId && onSelectWell) {
+        const well = wells.find(w => w.id === associatedWellId) || selectedWell;
+        if (well) {
+          onSelectWell(well);
+        }
+      }
+
       if (onFileUpload) {
-        onFileUpload(response.data);
+        onFileUpload(uploadResult);
+      }
+
+      // Refresh uploads list
+      try {
+        const { data } = await axios.get(apiUrl('/api/uploads'));
+        setRecentUploads(data);
+      } catch (refreshError) {
+        console.error('Error refreshing uploads list:', refreshError);
       }
     } catch (error) {
       console.error('Upload error:', error);
@@ -79,8 +200,13 @@ const FileUpload = ({ onFileUpload }) => {
   };
 
   const clearUpload = () => {
-    setUploadedFile(null);
-    setUploadStatus(null);
+    resetUploadState();
+    setNewWellName('');
+    setNewWellDepth('');
+    setWellError(null);
+    if (!selectedWell && wells.length === 0) {
+      setWellMode('new');
+    }
   };
 
   return (
@@ -171,6 +297,129 @@ const FileUpload = ({ onFileUpload }) => {
           </div>
         )}
 
+        {/* Well Association */}
+        <div className="mt-6 sm:mt-8 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-medium text-gray-800 dark:text-white">Associate Data with a Well</h3>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setWellMode('existing');
+                  setWellError(null);
+                }}
+                className={`px-3 py-1 text-sm rounded-lg border ${wellMode === 'existing' ? 'bg-primary-500 text-white border-primary-500' : 'border-gray-300 dark:border-gray-500 text-gray-600 dark:text-gray-300'}`}
+              >
+                Existing Well
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWellMode('new');
+                  setSelectedWellId('');
+                  setWellError(null);
+                }}
+                className={`px-3 py-1 text-sm rounded-lg border ${wellMode === 'new' ? 'bg-primary-500 text-white border-primary-500' : 'border-gray-300 dark:border-gray-500 text-gray-600 dark:text-gray-300'}`}
+              >
+                <Plus className="w-4 h-4 inline-block mr-1" /> New Well
+              </button>
+            </div>
+          </div>
+
+          {wellMode === 'existing' && (
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="well-select">
+                Choose an existing well
+              </label>
+              <select
+                id="well-select"
+                value={selectedWellId}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setSelectedWellId(value);
+                  if (value && onSelectWell) {
+                    const selected = wells.find((well) => String(well.id) === value);
+                    if (selected) {
+                      onSelectWell(selected);
+                    }
+                  }
+                }}
+                className="w-full border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 bg-white dark:bg-gray-800 text-sm"
+              >
+                <option value="">Select well...</option>
+                {wells.map((well) => (
+                  <option key={well.id} value={well.id}>
+                    {well.name} · {well.depth.toLocaleString()}m · {well.status}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Data will be persisted and linked to the selected well for visualization and chatbot analysis.
+              </p>
+            </div>
+          )}
+
+          {wellMode === 'new' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="new-well-name">
+                  Well Name
+                </label>
+                <input
+                  id="new-well-name"
+                  type="text"
+                  value={newWellName}
+                  onChange={(e) => setNewWellName(e.target.value)}
+                  className="mt-1 w-full border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 bg-white dark:bg-gray-800 text-sm"
+                  placeholder="e.g., Horizon Field-12"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="new-well-depth">
+                  Total Depth (m)
+                </label>
+                <input
+                  id="new-well-depth"
+                  type="number"
+                  value={newWellDepth}
+                  onChange={(e) => setNewWellDepth(e.target.value)}
+                  className="mt-1 w-full border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 bg-white dark:bg-gray-800 text-sm"
+                  placeholder="e.g., 3200"
+                  min="0"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="new-well-status">
+                  Status
+                </label>
+                <select
+                  id="new-well-status"
+                  value={newWellStatus}
+                  onChange={(e) => setNewWellStatus(e.target.value)}
+                  className="mt-1 w-full border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-primary-500 focus:border-primary-500 bg-white dark:bg-gray-800 text-sm"
+                >
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                  <option value="Maintenance">Maintenance</option>
+                </select>
+              </div>
+              {wellError && (
+                <div className="sm:col-span-2">
+                  <div className="flex items-center p-3 rounded-lg bg-red-50 text-red-800 text-sm">
+                    <AlertCircle className="w-5 h-5 mr-2" />
+                    {wellError}
+                  </div>
+                </div>
+              )}
+              {wellSaving && (
+                <div className="sm:col-span-2 text-sm text-primary-600 flex items-center">
+                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Creating well...
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="mt-6 sm:mt-8 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
           <h3 className="font-medium text-gray-800 dark:text-white mb-3">Expected Data Format</h3>
           <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
@@ -187,6 +436,80 @@ const FileUpload = ({ onFileUpload }) => {
             <div>• <strong>%Salt:</strong> Salt percentage</div>
             <div>• <strong>DT:</strong> Delta Time measurements</div>
             <div>• <strong>GR:</strong> Gamma Ray readings</div>
+          </div>
+        </div>
+
+        <div className="mt-6 sm:mt-8">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-medium text-gray-800 dark:text-white">Recent Uploads</h3>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  setLoadingUploads(true);
+                  const { data } = await axios.get(apiUrl('/api/uploads'));
+                  setRecentUploads(data);
+                } catch (error) {
+                  console.error('Error refreshing uploads:', error);
+                } finally {
+                  setLoadingUploads(false);
+                }
+              }}
+              className="flex items-center px-2 py-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+            >
+              <RefreshCw className={`w-3 h-3 mr-1 ${loadingUploads ? 'animate-spin' : ''}`} /> Refresh
+            </button>
+          </div>
+          <div className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg divide-y divide-gray-200 dark:divide-gray-700">
+            {recentUploads.length === 0 ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400 p-4">No uploads yet. Upload a file to see it listed here.</p>
+            ) : (
+              recentUploads.map((upload) => (
+                <div
+                  key={upload.id}
+                  className="p-3 text-sm text-gray-700 dark:text-gray-300 flex justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                  onClick={async () => {
+                    try {
+                      const persisted = await axios.get(apiUrl(`/api/uploads/${upload.id}/data`));
+                      const persistedPayload = {
+                        rows: persisted.data.rows,
+                        totalRows: persisted.data.totalRows,
+                        statistics: persisted.data.statistics,
+                        fileId: upload.id,
+                        file: {
+                          filename: upload.filename,
+                          originalName: upload.originalName,
+                          size: upload.size
+                        }
+                      };
+                      if (onFileUpload) {
+                        onFileUpload(persistedPayload);
+                      }
+                      setUploadStatus({
+                        type: 'success',
+                        message: 'Loaded persisted dataset from previous upload.'
+                      });
+                    } catch (persistedError) {
+                      console.error('Error loading persisted upload:', persistedError);
+                      setUploadStatus({
+                        type: 'error',
+                        message: 'Unable to load persisted dataset.'
+                      });
+                    }
+                  }}
+                >
+                  <div>
+                    <p className="font-medium text-gray-800 dark:text-white truncate">{upload.originalName || upload.filename}</p>
+                    <p className="text-xs text-gray-500">
+                      {new Date(upload.uploadedAt).toLocaleString()} · {upload.rows} rows
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p>{upload.size ? `${(upload.size / 1024).toFixed(1)} KB` : '—'}</p>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

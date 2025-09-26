@@ -5,6 +5,7 @@ import Chatbot from './Chatbot';
 import FileUpload from './FileUpload';
 import { useTheme } from '../contexts/ThemeContext';
 import { Upload, MessageCircle, BarChart3, Menu, X, Sun, Moon } from 'lucide-react';
+import { apiUrl } from '../api';
 
 const Dashboard = () => {
   const [selectedWell, setSelectedWell] = useState(null);
@@ -18,7 +19,7 @@ const Dashboard = () => {
     // Load wells from API
     const loadWells = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/wells');
+        const response = await fetch(apiUrl('/api/wells'));
         if (response.ok) {
           const wellsData = await response.json();
           setWells(wellsData);
@@ -39,8 +40,20 @@ const Dashboard = () => {
   };
 
   const handleFileUpload = (data) => {
+    if (data?.wellId) {
+      const associatedWell = wells.find((well) => well.id === data.wellId);
+      if (associatedWell) {
+        setSelectedWell(associatedWell);
+      }
+    }
+
     setUploadedData(data);
     setActiveTab('visualization');
+  };
+
+  const handleWellCreated = (newWell) => {
+    setWells((prev) => [newWell, ...prev]);
+    setSelectedWell(newWell);
   };
 
   const tabs = [
@@ -165,7 +178,13 @@ const Dashboard = () => {
         <div className="flex-1 overflow-auto bg-gray-50 dark:bg-gray-900">
           <div className="p-4 sm:p-6">
             {activeTab === 'upload' && (
-              <FileUpload onFileUpload={handleFileUpload} />
+              <FileUpload 
+                wells={wells}
+                selectedWell={selectedWell}
+                onSelectWell={setSelectedWell}
+                onWellCreated={handleWellCreated}
+                onFileUpload={handleFileUpload}
+              />
             )}
             {activeTab === 'visualization' && (
               <DataVisualization 

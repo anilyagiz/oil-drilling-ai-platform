@@ -24,10 +24,18 @@ app.use(express.json({
 }));
 app.use(express.static(path.join(__dirname, '../client/build')));
 
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || 'your-openai-api-key-here'
-});
+// Initialize OpenRouter client (via OpenAI SDK)
+const openRouterConfig = {
+  apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+  defaultHeaders: {
+    'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'https://github.com/anilyagiz/oil-drilling-ai-platform',
+    'X-Title': process.env.OPENROUTER_TITLE || 'Oil Drilling AI Platform'
+  }
+};
+
+const openai = new OpenAI(openRouterConfig);
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'moonshotai/kimi-k2:free';
 
 // Database migration function
 function runDatabaseMigrations(db) {
@@ -165,6 +173,25 @@ function initializeDatabase() {
         uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )`);
 
+      db.run(`CREATE TABLE IF NOT EXISTS uploaded_data_rows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        uploaded_file_id INTEGER NOT NULL,
+        row_index INTEGER,
+        depth REAL,
+        shale_percent REAL,
+        sandstone_percent REAL,
+        limestone_percent REAL,
+        dolomite_percent REAL,
+        anhydrite_percent REAL,
+        coal_percent REAL,
+        salt_percent REAL,
+        dt REAL,
+        gr REAL,
+        dominant_rock_type TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files (id) ON DELETE CASCADE
+      )`);
+
       db.run(`CREATE TABLE IF NOT EXISTS chat_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT,
@@ -180,6 +207,36 @@ function initializeDatabase() {
       // Run migrations if needed
       runDatabaseMigrations(db).catch(migrationError => {
         console.error('Migration failed:', migrationError);
+      });
+
+      // Seed wells if empty
+      db.get('SELECT COUNT(*) as count FROM wells', (countErr, row) => {
+        if (countErr) {
+          console.error('Error checking wells count:', countErr);
+          return;
+        }
+
+        if (row && row.count === 0) {
+          const seedWells = [
+            { name: 'Emerald Basin-1', depth: 3250, status: 'Active' },
+            { name: 'Orion Deepwater-7', depth: 4125, status: 'Maintenance' },
+            { name: 'Atlas Ridge-3', depth: 2875, status: 'Active' },
+            { name: 'Aurora Shale-2', depth: 1980, status: 'Inactive' },
+            { name: 'Titan Offshore-5', depth: 4550, status: 'Active' }
+          ];
+
+          const stmt = db.prepare('INSERT INTO wells (name, depth, status) VALUES (?, ?, ?)');
+          seedWells.forEach(well => {
+            stmt.run([well.name, well.depth, well.status]);
+          });
+          stmt.finalize(err => {
+            if (err) {
+              console.error('Error seeding wells:', err);
+            } else {
+              console.log('Seeded default wells data');
+            }
+          });
+        }
       });
     }
   });
@@ -228,7 +285,7 @@ app.get('/api/health', (req, res) => {
     version: process.env.npm_package_version || '1.0.0',
     services: {
       database: 'OK',
-      openai: 'OK'
+      openrouter: 'OK'
     }
   };
 
@@ -240,8 +297,8 @@ app.get('/api/health', (req, res) => {
     }
 
     // Check OpenAI API (basic check)
-    if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'your-openai-api-key-here') {
-      healthCheck.services.openai = 'NOT_CONFIGURED';
+    if (!openRouterConfig.apiKey || openRouterConfig.apiKey === 'your-openai-api-key-here') {
+      healthCheck.services.openrouter = 'NOT_CONFIGURED';
       if (healthCheck.status === 'OK') {
         healthCheck.status = 'DEGRADED';
       }
@@ -363,6 +420,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     }
 
     console.log(`Processing file: ${req.file.originalname} (${req.file.size} bytes)`);
+    const uploadedFilePath = req.file.path;
 
     // Check file extension early
     const allowedExtensions = ['.xlsx', '.xls'];
@@ -523,34 +581,147 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       stats.rockTypeDistribution[rockType] = (stats.rockTypeDistribution[rockType] || 0) + 1;
     });
 
-    // Store file info in database
-    db.run(
-      'INSERT INTO uploaded_files (filename, original_name, file_size) VALUES (?, ?, ?)',
-      [req.file.filename, req.file.originalname, req.file.size],
-      function(err) {
-        if (err) {
-          console.error('Error saving file info:', err);
-        } else {
-          console.log(`File info saved with ID: ${this.lastID}`);
+    // Store file info and processed data in database
+    const wellId = req.body.wellId ? parseInt(req.body.wellId, 10) || null : null;
+
+    db.serialize(() => {
+      db.run(
+        'INSERT INTO uploaded_files (filename, original_name, file_size) VALUES (?, ?, ?)',
+        [req.file.filename, req.file.originalname, req.file.size],
+        function(err) {
+          if (err) {
+            console.error('Error saving file info:', err);
+            return res.status(500).json({ error: 'Failed to persist uploaded file metadata' });
+          }
+
+          const fileId = this.lastID;
+          const insertStmt = db.prepare(`
+            INSERT INTO uploaded_data_rows (
+              uploaded_file_id,
+              row_index,
+              depth,
+              shale_percent,
+              sandstone_percent,
+              limestone_percent,
+              dolomite_percent,
+              anhydrite_percent,
+              coal_percent,
+              salt_percent,
+              dt,
+              gr,
+              dominant_rock_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          processedData.forEach((row, index) => {
+            insertStmt.run([
+              fileId,
+              index + 1,
+              row.DEPTH,
+              row.SH,
+              row.SS,
+              row.LS,
+              row.DOL,
+              row.ANH,
+              row.Coal,
+              row.Salt,
+              row.DT,
+              row.GR,
+              row.dominantRockType
+            ]);
+          });
+
+          insertStmt.finalize((stmtErr) => {
+            if (stmtErr) {
+              console.error('Error persisting data rows:', stmtErr);
+              return res.status(500).json({ error: 'Failed to persist uploaded data rows' });
+            }
+
+            const finalizeResponse = () => {
+              if (uploadedFilePath && fs.existsSync(uploadedFilePath)) {
+                try {
+                  fs.unlinkSync(uploadedFilePath);
+                } catch (cleanupErr) {
+                  console.error('Error removing uploaded file:', cleanupErr);
+                }
+              }
+
+              console.log(`Successfully processed ${processedData.length} rows from ${req.file.originalname}`);
+
+              res.json({
+                message: 'File uploaded and processed successfully',
+                rows: processedData,
+                totalRows: processedData.length,
+                statistics: stats,
+                validation: {
+                  isValid: true,
+                  columnsFound: validation.columns,
+                  warnings: validation.errors.length > 0 ? validation.errors : []
+                },
+                fileId,
+                file: {
+                  filename: req.file.filename,
+                  originalName: req.file.originalname,
+                  size: req.file.size
+                },
+                wellId
+              });
+            };
+
+            if (wellId) {
+              const wellInsertStmt = db.prepare(`
+                INSERT INTO well_data (
+                  well_id, depth, shale_percent, sandstone_percent, limestone_percent,
+                  dolomite_percent, anhydrite_percent, coal_percent, salt_percent,
+                  dt, gr, dominant_rock_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `);
+
+              let hasError = false;
+              processedData.forEach(row => {
+                wellInsertStmt.run([
+                  wellId,
+                  row.DEPTH,
+                  row.SH,
+                  row.SS,
+                  row.LS,
+                  row.DOL,
+                  row.ANH,
+                  row.Coal,
+                  row.Salt,
+                  row.DT,
+                  row.GR,
+                  row.dominantRockType
+                ], (wellErr) => {
+                  if (wellErr && !hasError) {
+                    hasError = true;
+                    console.error('Error persisting well data rows:', wellErr);
+                    if (!res.headersSent) {
+                      res.status(500).json({ error: 'Failed to persist well data rows' });
+                    }
+                  }
+                });
+              });
+
+              wellInsertStmt.finalize((wellFinalizeErr) => {
+                if (wellFinalizeErr) {
+                  console.error('Error finalizing well data insert:', wellFinalizeErr);
+                  if (!res.headersSent) {
+                    res.status(500).json({ error: 'Failed to finalize well data persistence' });
+                  }
+                  return;
+                }
+
+                if (!hasError && !res.headersSent) {
+                  finalizeResponse();
+                }
+              });
+            } else {
+              finalizeResponse();
+            }
+          });
         }
-      }
-    );
-
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
-
-    console.log(`Successfully processed ${processedData.length} rows from ${req.file.originalname}`);
-
-    res.json({
-      message: 'File uploaded and processed successfully',
-      rows: processedData,
-      totalRows: processedData.length,
-      statistics: stats,
-      validation: {
-        isValid: true,
-        columnsFound: validation.columns,
-        warnings: validation.errors.length > 0 ? validation.errors : []
-      }
+      );
     });
 
   } catch (error) {
@@ -677,7 +848,7 @@ app.post('/api/chat', async (req, res) => {
 
     try {
       const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
+        model: OPENROUTER_MODEL,
         messages: [
           {
             role: "system",
@@ -719,7 +890,9 @@ app.post('/api/chat', async (req, res) => {
       response,
       sessionId: chatSessionId,
       isAIResponse,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      model: OPENROUTER_MODEL,
+      uploadedFileId
     });
 
   } catch (error) {
@@ -987,6 +1160,127 @@ app.get('/api/wells', (req, res) => {
     }
     res.json(rows);
   });
+});
+
+// Get uploaded files list
+app.get('/api/uploads', (req, res) => {
+  db.all(
+    `SELECT u.*, (
+      SELECT COUNT(*) FROM uploaded_data_rows r WHERE r.uploaded_file_id = u.id
+    ) as row_count
+    FROM uploaded_files u
+    ORDER BY u.uploaded_at DESC
+    LIMIT 25`,
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+
+      res.json(rows.map(row => ({
+        id: row.id,
+        filename: row.filename,
+        originalName: row.original_name,
+        size: row.file_size,
+        uploadedAt: row.uploaded_at,
+        rows: row.row_count
+      })));
+    }
+  );
+});
+
+// Create a new well
+app.post('/api/wells', (req, res) => {
+  const { name, depth, status } = req.body;
+
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'Well name is required' });
+  }
+
+  const numericDepth = depth !== undefined ? Number(depth) : null;
+  if (numericDepth === null || Number.isNaN(numericDepth) || numericDepth <= 0) {
+    return res.status(400).json({ error: 'Valid depth (in meters) is required' });
+  }
+
+  const allowedStatuses = ['Active', 'Inactive', 'Maintenance'];
+  const normalizedStatus = allowedStatuses.includes(status) ? status : 'Active';
+
+  db.run(
+    'INSERT INTO wells (name, depth, status) VALUES (?, ?, ?)',
+    [name.trim(), numericDepth, normalizedStatus],
+    function(err) {
+      if (err) {
+        console.error('Error creating well:', err);
+        return res.status(500).json({ error: 'Failed to create well' });
+      }
+
+      res.status(201).json({
+        id: this.lastID,
+        name: name.trim(),
+        depth: numericDepth,
+        status: normalizedStatus
+      });
+    }
+  );
+});
+
+// Get persisted uploaded data
+app.get('/api/uploads/:id/data', (req, res) => {
+  const fileId = req.params.id;
+
+  db.all(
+    `SELECT * FROM uploaded_data_rows WHERE uploaded_file_id = ? ORDER BY row_index ASC`,
+    [fileId],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+
+      if (!rows || rows.length === 0) {
+        res.status(404).json({ error: 'No data found for uploaded file' });
+        return;
+      }
+
+      const processedRows = rows.map(row => ({
+        DEPTH: row.depth,
+        SH: row.shale_percent,
+        SS: row.sandstone_percent,
+        LS: row.limestone_percent,
+        DOL: row.dolomite_percent,
+        ANH: row.anhydrite_percent,
+        Coal: row.coal_percent,
+        Salt: row.salt_percent,
+        DT: row.dt,
+        GR: row.gr,
+        dominantRockType: row.dominant_rock_type,
+        rowIndex: row.row_index
+      }));
+
+      const stats = {
+        totalRows: processedRows.length,
+        depthRange: {
+          min: Math.min(...processedRows.map(r => r.DEPTH).filter(d => d !== null && d !== undefined)),
+          max: Math.max(...processedRows.map(r => r.DEPTH).filter(d => d !== null && d !== undefined))
+        },
+        rockTypeDistribution: processedRows.reduce((acc, row) => {
+          const type = row.dominantRockType || 'Unknown';
+          acc[type] = (acc[type] || 0) + 1;
+          return acc;
+        }, {}),
+        averages: {
+          DT: processedRows.reduce((sum, row) => sum + (row.DT || 0), 0) / processedRows.length,
+          GR: processedRows.reduce((sum, row) => sum + (row.GR || 0), 0) / processedRows.length
+        }
+      };
+
+      res.json({
+        rows: processedRows,
+        totalRows: processedRows.length,
+        statistics: stats
+      });
+    }
+  );
 });
 
 // Get well data

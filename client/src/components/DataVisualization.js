@@ -12,6 +12,7 @@ import {
   Bar
 } from 'recharts';
 import { BarChart3, TrendingUp, Activity, Database } from 'lucide-react';
+import { apiUrl } from '../api';
 
 const DataVisualization = ({ selectedWell, uploadedData }) => {
   const [chartData, setChartData] = useState([]);
@@ -19,10 +20,10 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
 
   const loadWellData = useCallback(async () => {
     if (!selectedWell) return;
-    
+
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:5000/api/wells/${selectedWell.id}/data`);
+      const response = await fetch(apiUrl(`/api/wells/${selectedWell.id}/data`));
       if (response.ok) {
         const wellData = await response.json();
         const processedData = wellData.map(row => {
@@ -59,15 +60,45 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
   }, [selectedWell]);
 
   useEffect(() => {
+    const loadUploadedData = async () => {
+      if (!uploadedData) {
+        return;
+      }
+
+      if (uploadedData.rows && uploadedData.rows.length > 0) {
+        processData(uploadedData);
+        return;
+      }
+
+      if (uploadedData.fileId) {
+        setLoading(true);
+        try {
+          const response = await fetch(apiUrl(`/api/uploads/${uploadedData.fileId}/data`));
+          if (response.ok) {
+            const persisted = await response.json();
+            processData({ rows: persisted.rows });
+          } else {
+            setChartData([]);
+            setLoading(false);
+          }
+        } catch (error) {
+          console.error('Error loading persisted upload data:', error);
+          setChartData([]);
+          setLoading(false);
+        }
+      }
+    };
+
     if (uploadedData) {
-      processData(uploadedData);
+      loadUploadedData();
     } else if (selectedWell) {
       loadWellData();
+    } else {
+      setChartData([]);
     }
   }, [selectedWell, uploadedData, loadWellData]);
 
   const processData = (data) => {
-    setLoading(true);
     // Process the uploaded Excel data with actual structure
     if (data && data.rows) {
       const processedData = data.rows.map((row, index) => {
@@ -94,6 +125,8 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
         return processedRow;
       });
       setChartData(processedData);
+    } else {
+      setChartData([]);
     }
     setLoading(false);
   };
@@ -112,12 +145,13 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
+      const depthValue = payload[0]?.payload?.depth ?? label;
       return (
         <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
-          <p className="font-medium text-gray-800">Depth: {label}m</p>
+          <p className="font-medium text-gray-800">Depth: {depthValue}m</p>
           {payload.map((entry, index) => (
             <p key={index} className="text-sm" style={{ color: entry.color }}>
-              {entry.dataKey}: {entry.value.toFixed(2)}
+              {entry.dataKey}: {typeof entry.value === 'number' ? entry.value.toFixed(2) : entry.value}
             </p>
           ))}
         </div>
@@ -269,15 +303,19 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
         </h3>
         <div className="w-full" style={{ height: '300px' }}>
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+            <LineChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis 
-                dataKey="depth" 
-                label={{ value: 'Depth (m)', position: 'insideBottom', offset: -5 }}
+                type="number"
+                dataKey="rockComposition"
+                tickFormatter={(value) => `${(value * 100).toFixed(0)}%`}
+                label={{ value: 'Rock Composition (%)', position: 'insideBottomRight', offset: -5 }}
                 fontSize={12}
               />
               <YAxis 
-                label={{ value: 'Rock Composition (%)', angle: -90, position: 'insideLeft' }}
+                type="number"
+                dataKey="depth"
+                label={{ value: 'Depth (m)', angle: -90, position: 'insideLeft' }}
                 fontSize={12}
               />
               <Tooltip content={<CustomTooltip />} />
@@ -302,18 +340,20 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
         </h3>
         <div className="w-full" style={{ height: '400px' }}>
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+            <LineChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis 
-                dataKey="depth" 
+                type="number"
                 fontSize={12}
-                label={{ value: 'Depth (m)', position: 'insideBottom', offset: -5 }}
-              />
-              <YAxis 
-                fontSize={12}
-                label={{ value: 'Percentage (%)', angle: -90, position: 'insideLeft' }}
+                label={{ value: 'Percentage (%)', position: 'insideBottomRight', offset: -5 }}
                 domain={[0, 1]}
                 tickFormatter={(value) => `${(value * 100).toFixed(0)}%`}
+              />
+              <YAxis 
+                type="number"
+                dataKey="depth"
+                fontSize={12}
+                label={{ value: 'Depth (m)', angle: -90, position: 'insideLeft' }}
               />
               <Tooltip 
                 content={({ active, payload, label }) => {
@@ -452,11 +492,12 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
           </h3>
           <div className="w-full" style={{ height: '250px' }}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+              <LineChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="depth" fontSize={12} />
-                <YAxis fontSize={12} />
+                <XAxis type="number" fontSize={12} label={{ value: 'DT (μs/ft)', position: 'insideBottomRight', offset: -5 }} />
+                <YAxis type="number" dataKey="depth" fontSize={12} label={{ value: 'Depth (m)', angle: -90, position: 'insideLeft' }} />
                 <Tooltip content={<CustomTooltip />} />
+                <Legend />
                 <Line 
                   type="monotone" 
                   dataKey="DT" 
@@ -477,11 +518,12 @@ const DataVisualization = ({ selectedWell, uploadedData }) => {
           </h3>
           <div className="w-full" style={{ height: '250px' }}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+              <LineChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="depth" fontSize={12} />
-                <YAxis fontSize={12} />
+                <XAxis type="number" fontSize={12} label={{ value: 'GR (API)', position: 'insideBottomRight', offset: -5 }} />
+                <YAxis type="number" dataKey="depth" fontSize={12} label={{ value: 'Depth (m)', angle: -90, position: 'insideLeft' }} />
                 <Tooltip content={<CustomTooltip />} />
+                <Legend />
                 <Line 
                   type="monotone" 
                   dataKey="GR" 

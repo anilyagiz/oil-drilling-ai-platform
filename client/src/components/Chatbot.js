@@ -68,6 +68,18 @@ const Chatbot = ({ selectedWell, uploadedData }) => {
         uploadedData: uploadedData,
         enhancedContext: enhancedContext
       });
+      
+      // If we only have fileId, try to refresh uploaded data context
+      if ((!uploadedData?.rows || uploadedData.rows.length === 0) && response.data?.uploadedFileId) {
+        try {
+          const persisted = await axios.get(apiUrl(`/api/uploads/${response.data.uploadedFileId}/data`));
+          if (persisted.data?.rows) {
+            setMessages(prev => prev.map(msg => msg.id === userMessage.id ? { ...msg, uploadedData: persisted.data } : msg));
+          }
+        } catch (persistError) {
+          console.error('Error loading persisted upload for chatbot context:', persistError);
+        }
+      }
 
       const botMessage = {
         id: Date.now() + 1,
