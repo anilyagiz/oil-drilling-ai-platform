@@ -35,7 +35,8 @@ describe('API Endpoints', () => {
       expect(response.body).toHaveProperty('uptime');
       expect(response.body).toHaveProperty('services');
       expect(response.body.services).toHaveProperty('database');
-      expect(response.body.services).toHaveProperty('openai');
+      expect(response.body.services).toHaveProperty('openrouter');
+      expect(response.body.services.openrouter).toBeDefined();
     });
   });
 
