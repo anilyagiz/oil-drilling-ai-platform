@@ -1,15 +1,7 @@
-name: Backend Deployment
+name: Backend Deployment (disabled)
 
 on:
-  push:
-    branches: [ master ]
-    paths:
-      - 'server/**'
-      - '.github/workflows/backend-deploy.yml'
-  pull_request:
-    branches: [ master ]
-    paths:
-      - 'server/**'
+  workflow_dispatch:
 
 jobs:
   test-backend:
@@ -194,18 +186,6 @@ jobs:
         echo "Creating test database with old structure..."
         # Create a test database and run migrations
         node -e "
-          const sqlite3 = require('sqlite3').verbose();
-          const db = new sqlite3.Database('./test_migration.db');
-          
-          // Create old structure to test migration
-          db.serialize(() => {
-            db.run('CREATE TABLE wells (id INTEGER PRIMARY KEY, name TEXT, depth INTEGER, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
-            db.run('CREATE TABLE well_data (id INTEGER PRIMARY KEY, well_id INTEGER, depth REAL, rock_composition TEXT, dt REAL, gr REAL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
-            
-            console.log('Test database created with old structure');
-            db.close();
-          });
-        "
         
         echo "Testing migration by starting server briefly..."
         # Test migration by starting server briefly
