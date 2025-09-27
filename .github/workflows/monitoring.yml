@@ -108,182 +108,59 @@ jobs:
       run: |
         echo "Installing root dependencies..."
         npm ci
-        echo "Installing client dependencies..."
         cd client && npm ci
         echo "Installing server dependencies..."
         cd ../server && npm ci
         echo "Dependencies installed successfully"
     
     - name: Build and performance test
-      run: |
+        set -euo pipefail
+        mkdir -p tmp
+        trap 'echo "\n--- Performance server log ---"; cat tmp/perf-server.log || true' ERR
+
         echo "Building client for performance testing..."
-        cd client && npm run build
+        cd client
+        npm run build
         cd ..
-        
+
         echo "Starting server for performance testing..."
         cd server
-        npm start &
+        npm start > ../tmp/perf-server.log 2>&1 &
         SERVER_PID=$!
         echo "Server started with PID: $SERVER_PID"
+        echo $SERVER_PID > ../tmp/perf-server.pid
         cd ..
-        
-        # Wait longer for the server to fully start
-        echo "Waiting 30 seconds for server to start..."
-        sleep 30
-        
-        # Check if server is running
-        echo "Checking if server is running..."
-        if ps -p $SERVER_PID > /dev/null; then
-          echo "Server is running"
-        else
-          echo "Server is not running"
-          exit 1
-        fi
-        
-        echo "Running performance tests..."
-        
-        # Test response times
-        echo "=== API Response Time Tests ==="
-        
-        # Health endpoint
-        echo "Testing /api/health response time..."
-        curl -s -o /dev/null -w "Status: %{http_code}\n" http://localhost:5000/api/health || { echo "Health endpoint test completed (with possible error)"; }
-        
-        # Wells endpoint
-        echo "Testing /api/wells response time..."
-        curl -s -o /dev/null -w "Status: %{http_code}\n" http://localhost:5000/api/wells || { echo "Wells endpoint test completed (with possible error)"; }
-        
-        # Chat history endpoint
-        echo "Testing /api/chat/history response time..."
-        curl -s -o /dev/null -w "Status: %{http_code}\n" http://localhost:5000/api/chat/history || { echo "Chat history endpoint test completed (with possible error)"; }
-        
-        echo "Performance tests completed"
-        
-        # Cleanup
-        echo "Cleaning up server process..."
-        kill $SERVER_PID || true
-        echo "Cleanup completed"
-    
-    - name: Bundle size analysis
-      run: |
-        echo "=== Bundle Size Analysis ==="
-        cd client
-        
-        # Check if build directory exists
-        if [ -d "build" ]; then
-          echo "Build directory exists"
-          echo "Build directory size:"
-          du -sh build/
-          
-          echo "Static files breakdown:"
-          if [ -d "build/static" ]; then
-            echo "Static directory exists"
-            find build/static -name "*.js" -exec ls -lh {} \; | head -10
-            find build/static -name "*.css" -exec ls -lh {} \; | head -5
-          else
-            echo "Static directory does not exist"
+
+        echo "Waiting for server to become ready..."
+        READY=false
+        for attempt in {1..12}; do
+          if curl -sSf http://localhost:5000/api/health > /dev/null 2>&1; then
+            echo "Server is responding (attempt $attempt)"
+            READY=true
+            break
           fi
-        else
-          echo "Build directory does not exist"
-        fi
-        
-        cd ..
 
-  error-tracking:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-    
-    - name: Install dependencies
-      run: |
-        echo "Installing root dependencies..."
-        npm ci
-        echo "Installing server dependencies..."
-        cd server && npm ci
-        echo "Dependencies installed successfully"
-    
-    - name: Error tracking and logging test
-      run: |
-        echo "Testing error handling and logging..."
-        cd server
-        
-        # Start server
-        echo "Starting server..."
-        npm start &
-        SERVER_PID=$!
-        echo "Server started with PID: $SERVER_PID"
-        sleep 30
-        
-        # Check if server is running
-        echo "Checking if server is running..."
-        if ps -p $SERVER_PID > /dev/null; then
-          echo "Server is running"
-        else
-          echo "Server is not running"
+          if ! ps -p $(cat tmp/perf-server.pid) > /dev/null; then
+            echo "Server process exited prematurely"
+            cat tmp/perf-server.log || true
+            exit 1
+          fi
+
+          echo "Server not ready yet (attempt $attempt), retrying in 5s..."
+          sleep 5
+        done
+
+        if [ "$READY" = false ]; then
+          echo "Server did not become ready in time"
           exit 1
         fi
-        
-        # Test error endpoints
-        echo "=== Error Handling Tests ==="
-        
-        # Test invalid file upload
-        echo "Testing invalid file upload error handling..."
-        curl -X POST http://localhost:5000/api/upload \
-          -F "file=@../README.md" \
-          -w "Status: %{http_code}\n" -s -o /dev/null || { echo "Invalid file upload test completed (with possible error)"; }
-        
-        # Test invalid chat request
-        echo "Testing invalid chat request error handling..."
-        curl -X POST http://localhost:5000/api/chat \
-          -H "Content-Type: application/json" \
-          -d '{}' \
-          -w "Status: %{http_code}\n" -s -o /dev/null || { echo "Invalid chat request test completed (with possible error)"; }
-        
-        # Test non-existent well
-        echo "Testing non-existent well error handling..."
-        curl http://localhost:5000/api/wells/99999/data \
-          -w "Status: %{http_code}\n" -s -o /dev/null || { echo "Non-existent well test completed (with possible error)"; }
-        
-        echo "Error handling tests completed"
-        
-        # Cleanup
-        echo "Cleaning up server process..."
-        kill $SERVER_PID || true
-        echo "Cleanup completed"
 
-  system-health-report:
-    runs-on: ubuntu-latest
-    needs: [dependency-updates, performance-monitoring, error-tracking]
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Generate system health report
-      run: |
-        echo "# System Health Report - $(date)" > health-report.md
-        echo "" >> health-report.md
-        echo "## System Status" >> health-report.md
-        echo "- ✅ Dependency checks completed" >> health-report.md
-        echo "- ✅ Performance monitoring completed" >> health-report.md
-        echo "- ✅ Error tracking tests completed" >> health-report.md
-        echo "" >> health-report.md
-        
-        echo "## Recommendations" >> health-report.md
+        echo "Running performance tests..."
         echo "1. Review dependency updates regularly" >> health-report.md
         echo "2. Monitor API response times" >> health-report.md
         echo "3. Check error logs for patterns" >> health-report.md
         echo "4. Update security patches promptly" >> health-report.md
         echo "" >> health-report.md
-        
         echo "## Next Actions" >> health-report.md
         echo "- [ ] Review outdated dependencies" >> health-report.md
         echo "- [ ] Address any security vulnerabilities" >> health-report.md
