@@ -12,25 +12,28 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
     if (selectedWell) return 'existing';
     return wells.length > 0 ? 'existing' : 'new';
   });
-  const [selectedWellId, setSelectedWellId] = useState(selectedWell?.id || '');
+  const [selectedWellId, setSelectedWellId] = useState(selectedWell?.id ? String(selectedWell.id) : '');
   const [newWellName, setNewWellName] = useState('');
   const [newWellDepth, setNewWellDepth] = useState('');
   const [newWellStatus, setNewWellStatus] = useState('Active');
   const [wellSaving, setWellSaving] = useState(false);
   const [wellError, setWellError] = useState(null);
+  const [wellSuccess, setWellSuccess] = useState(null);
   const [recentUploads, setRecentUploads] = useState([]);
   const [loadingUploads, setLoadingUploads] = useState(false);
 
   useEffect(() => {
     if (selectedWell?.id) {
-      setSelectedWellId(selectedWell.id);
+      setSelectedWellId(String(selectedWell.id));
       setWellMode('existing');
+      setWellSuccess(null);
     }
   }, [selectedWell]);
 
   useEffect(() => {
     if (!selectedWell && wells.length > 0 && wellMode === 'new') {
       setWellMode('existing');
+      setWellSuccess(null);
     }
   }, [wells, selectedWell, wellMode]);
 
@@ -81,6 +84,54 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
     setUploadStatus(null);
   };
 
+  const createWell = async () => {
+    const trimmedName = newWellName.trim();
+    if (!trimmedName) {
+      setWellError('Please provide a name for the new well.');
+      throw new Error('validation');
+    }
+
+    const parsedDepth = Number(newWellDepth);
+    if (!Number.isFinite(parsedDepth) || parsedDepth <= 0) {
+      setWellError('Please provide a positive depth (in meters) for the new well.');
+      throw new Error('validation');
+    }
+
+    try {
+      setWellSaving(true);
+      setWellError(null);
+      setWellSuccess(null);
+
+      const { data: createdWell } = await axios.post(apiUrl('/api/wells'), {
+        name: trimmedName,
+        depth: parsedDepth,
+        status: newWellStatus
+      });
+
+      setSelectedWellId(String(createdWell.id));
+      setWellMode('existing');
+      setNewWellName('');
+      setNewWellDepth('');
+      setNewWellStatus('Active');
+      setWellSuccess('Well created successfully. You can now select it and upload data.');
+
+      if (onWellCreated) {
+        onWellCreated(createdWell);
+      }
+      if (onSelectWell) {
+        onSelectWell(createdWell);
+      }
+
+      return createdWell;
+    } catch (error) {
+      console.error('Error creating well:', error);
+      setWellError(error.response?.data?.error || 'Failed to create well. Please try again.');
+      throw error;
+    } finally {
+      setWellSaving(false);
+    }
+  };
+
   const handleFile = async (file) => {
     if (!file.name.toLowerCase().endsWith('.xlsx') && !file.name.toLowerCase().endsWith('.xls')) {
       setUploadStatus({
@@ -101,36 +152,14 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
     let associatedWellId = selectedWellId;
 
     if (wellMode === 'new') {
-      if (!newWellName.trim() || !newWellDepth) {
-        setWellError('Please provide a name and depth for the new well.');
-        return;
-      }
-
       try {
-        setWellSaving(true);
-        setWellError(null);
-        const { data: createdWell } = await axios.post(apiUrl('/api/wells'), {
-          name: newWellName,
-          depth: Number(newWellDepth),
-          status: newWellStatus
-        });
-
-        associatedWellId = createdWell.id;
-        setSelectedWellId(createdWell.id);
-        setWellMode('existing');
-        if (onWellCreated) {
-          onWellCreated(createdWell);
-        }
-        if (onSelectWell) {
-          onSelectWell(createdWell);
+        const createdWell = await createWell();
+        associatedWellId = createdWell?.id ? String(createdWell.id) : '';
+        if (!associatedWellId) {
+          return;
         }
       } catch (error) {
-        console.error('Error creating well:', error);
-        setWellError(error.response?.data?.error || 'Failed to create well. Please try again.');
-        setWellSaving(false);
         return;
-      } finally {
-        setWellSaving(false);
       }
     }
 
@@ -171,7 +200,7 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
       }
 
       if (associatedWellId && onSelectWell) {
-        const well = wells.find(w => w.id === associatedWellId) || selectedWell;
+        const well = wells.find(w => String(w.id) === String(associatedWellId)) || selectedWell;
         if (well) {
           onSelectWell(well);
         }
@@ -203,7 +232,9 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
     resetUploadState();
     setNewWellName('');
     setNewWellDepth('');
+    setNewWellStatus('Active');
     setWellError(null);
+    setWellSuccess(null);
     if (!selectedWell && wells.length === 0) {
       setWellMode('new');
     }
