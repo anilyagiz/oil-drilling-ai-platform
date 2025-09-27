@@ -25,8 +25,17 @@ app.use(express.json({
 app.use(express.static(path.join(__dirname, '../client/build')));
 
 // Initialize OpenRouter client (via OpenAI SDK)
+const resolvedApiKey = process.env.OPENROUTER_API_KEY
+  || process.env.OPENROUTER_KEY
+  || process.env.OPENAI_API_KEY;
+
+if (!resolvedApiKey) {
+  console.error('Missing API key. Set OPENROUTER_API_KEY (preferred) or OPENAI_API_KEY before starting the server.');
+  throw new Error('Missing OpenRouter/OpenAI API key');
+}
+
 const openRouterConfig = {
-  apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
+  apiKey: resolvedApiKey,
   baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
   defaultHeaders: {
     'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'https://github.com/anilyagiz/oil-drilling-ai-platform',
@@ -125,6 +134,85 @@ function runDatabaseMigrations(db) {
   });
 }
 
+function ensureWellsTableStructure(db) {
+  return new Promise((resolve, reject) => {
+    db.all('PRAGMA table_info(wells)', (err, columns) => {
+      if (err) {
+        console.error('Error inspecting wells table structure:', err);
+        reject(err);
+        return;
+      }
+
+      const columnNames = columns.map((col) => col.name);
+
+      if (!columnNames.includes('status')) {
+        console.log("Adding missing 'status' column to wells table...");
+        db.run("ALTER TABLE wells ADD COLUMN status TEXT DEFAULT 'Active'", (alterErr) => {
+          if (alterErr) {
+            console.error("Error adding 'status' column to wells table:", alterErr);
+            reject(alterErr);
+            return;
+          }
+
+          db.run("UPDATE wells SET status = 'Active' WHERE status IS NULL", (updateErr) => {
+            if (updateErr) {
+              console.error("Error backfilling 'status' column:", updateErr);
+              reject(updateErr);
+              return;
+            }
+
+            console.log("Successfully added and backfilled 'status' column on wells table.");
+            resolve();
+          });
+        });
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function seedInitialWells(db) {
+  return new Promise((resolve, reject) => {
+    db.get('SELECT COUNT(*) as count FROM wells', (countErr, row) => {
+      if (countErr) {
+        if (countErr.message && countErr.message.includes('no such table')) {
+          console.warn('Wells table not found during seeding check; skipping seed until schema is created.');
+          resolve();
+          return;
+        }
+        reject(countErr);
+        return;
+      }
+
+      if (row && row.count === 0) {
+        const seedWells = [
+          { name: 'Emerald Basin-1', depth: 3250, status: 'Active' },
+          { name: 'Orion Deepwater-7', depth: 4125, status: 'Maintenance' },
+          { name: 'Atlas Ridge-3', depth: 2875, status: 'Active' },
+          { name: 'Aurora Shale-2', depth: 1980, status: 'Inactive' },
+          { name: 'Titan Offshore-5', depth: 4550, status: 'Active' }
+        ];
+
+        const stmt = db.prepare('INSERT INTO wells (name, depth, status) VALUES (?, ?, ?)');
+        seedWells.forEach(well => {
+          stmt.run([well.name, well.depth, well.status]);
+        });
+        stmt.finalize(err => {
+          if (err) {
+            reject(err);
+          } else {
+            console.log('Seeded default wells data');
+            resolve();
+          }
+        });
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
 // Database setup
 let db;
 
@@ -138,105 +226,80 @@ function initializeDatabase() {
     } else {
       console.log(`Connected to SQLite database: ${dbPath}`);
       
-      // Create tables with new structure
-      db.run(`CREATE TABLE IF NOT EXISTS wells (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        depth INTEGER,
-        status TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )`);
+      db.serialize(() => {
+        // Create tables with new structure
+        db.run(`CREATE TABLE IF NOT EXISTS wells (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          depth INTEGER,
+          status TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
 
-      db.run(`CREATE TABLE IF NOT EXISTS well_data (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        well_id INTEGER,
-        depth REAL,
-        shale_percent REAL,        -- %SH
-        sandstone_percent REAL,    -- %SS
-        limestone_percent REAL,    -- %LS
-        dolomite_percent REAL,     -- %DOL
-        anhydrite_percent REAL,    -- %ANH
-        coal_percent REAL,         -- %Coal
-        salt_percent REAL,         -- %Salt
-        dt REAL,                   -- Delta Time
-        gr REAL,                   -- Gamma Ray
-        dominant_rock_type TEXT,   -- Calculated dominant rock type
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (well_id) REFERENCES wells (id)
-      )`);
+        db.run(`CREATE TABLE IF NOT EXISTS well_data (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          well_id INTEGER,
+          depth REAL,
+          shale_percent REAL,        -- %SH
+          sandstone_percent REAL,    -- %SS
+          limestone_percent REAL,    -- %LS
+          dolomite_percent REAL,     -- %DOL
+          anhydrite_percent REAL,    -- %ANH
+          coal_percent REAL,         -- %Coal
+          salt_percent REAL,
+          dt REAL,
+          gr REAL,
+          dominant_rock_type TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (well_id) REFERENCES wells (id)
+        )`);
 
-      db.run(`CREATE TABLE IF NOT EXISTS uploaded_files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        filename TEXT NOT NULL,
-        original_name TEXT,
-        file_size INTEGER,
-        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )`);
+        db.run(`CREATE TABLE IF NOT EXISTS uploaded_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          filename TEXT NOT NULL,
+          original_name TEXT,
+          file_size INTEGER,
+          uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
 
-      db.run(`CREATE TABLE IF NOT EXISTS uploaded_data_rows (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uploaded_file_id INTEGER NOT NULL,
-        row_index INTEGER,
-        depth REAL,
-        shale_percent REAL,
-        sandstone_percent REAL,
-        limestone_percent REAL,
-        dolomite_percent REAL,
-        anhydrite_percent REAL,
-        coal_percent REAL,
-        salt_percent REAL,
-        dt REAL,
-        gr REAL,
-        dominant_rock_type TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files (id) ON DELETE CASCADE
-      )`);
+        db.run(`CREATE TABLE IF NOT EXISTS uploaded_data_rows (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          uploaded_file_id INTEGER NOT NULL,
+          row_index INTEGER,
+          depth REAL,
+          shale_percent REAL,
+          sandstone_percent REAL,
+          limestone_percent REAL,
+          dolomite_percent REAL,
+          anhydrite_percent REAL,
+          coal_percent REAL,
+          salt_percent REAL,
+          dt REAL,
+          gr REAL,
+          dominant_rock_type TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files (id) ON DELETE CASCADE
+        )`);
 
-      db.run(`CREATE TABLE IF NOT EXISTS chat_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT,
-        message TEXT NOT NULL,
-        response TEXT NOT NULL,
-        well_id INTEGER,
-        uploaded_file_id INTEGER,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (well_id) REFERENCES wells (id),
-        FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files (id)
-      )`);
+        db.run(`CREATE TABLE IF NOT EXISTS chat_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          message TEXT NOT NULL,
+          response TEXT NOT NULL,
+          well_id INTEGER,
+          uploaded_file_id INTEGER,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (well_id) REFERENCES wells (id),
+          FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files (id)
+        )`);
 
-      // Run migrations if needed
-      runDatabaseMigrations(db).catch(migrationError => {
-        console.error('Migration failed:', migrationError);
-      });
-
-      // Seed wells if empty
-      db.get('SELECT COUNT(*) as count FROM wells', (countErr, row) => {
-        if (countErr) {
-          console.error('Error checking wells count:', countErr);
-          return;
-        }
-
-        if (row && row.count === 0) {
-          const seedWells = [
-            { name: 'Emerald Basin-1', depth: 3250, status: 'Active' },
-            { name: 'Orion Deepwater-7', depth: 4125, status: 'Maintenance' },
-            { name: 'Atlas Ridge-3', depth: 2875, status: 'Active' },
-            { name: 'Aurora Shale-2', depth: 1980, status: 'Inactive' },
-            { name: 'Titan Offshore-5', depth: 4550, status: 'Active' }
-          ];
-
-          const stmt = db.prepare('INSERT INTO wells (name, depth, status) VALUES (?, ?, ?)');
-          seedWells.forEach(well => {
-            stmt.run([well.name, well.depth, well.status]);
+        // Run migrations if needed, then seed
+        runDatabaseMigrations(db)
+          .then(() => ensureWellsTableStructure(db))
+          .then(() => seedInitialWells(db))
+          .catch(migrationError => {
+            console.error('Migration failed:', migrationError);
           });
-          stmt.finalize(err => {
-            if (err) {
-              console.error('Error seeding wells:', err);
-            } else {
-              console.log('Seeded default wells data');
-            }
-          });
-        }
       });
     }
   });
