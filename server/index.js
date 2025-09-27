@@ -29,22 +29,35 @@ const resolvedApiKey = process.env.OPENROUTER_API_KEY
   || process.env.OPENROUTER_KEY
   || process.env.OPENAI_API_KEY;
 
-if (!resolvedApiKey) {
-  console.error('Missing API key. Set OPENROUTER_API_KEY (preferred) or OPENAI_API_KEY before starting the server.');
-  throw new Error('Missing OpenRouter/OpenAI API key');
-}
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'moonshotai/kimi-k2:free';
+const AI_ENABLED = Boolean(resolvedApiKey);
 
-const openRouterConfig = {
+const openRouterConfig = AI_ENABLED ? {
   apiKey: resolvedApiKey,
   baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
   defaultHeaders: {
     'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'https://github.com/anilyagiz/oil-drilling-ai-platform',
     'X-Title': process.env.OPENROUTER_TITLE || 'Oil Drilling AI Platform'
   }
-};
+} : null;
 
-const openai = new OpenAI(openRouterConfig);
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'moonshotai/kimi-k2:free';
+const openai = AI_ENABLED
+  ? new OpenAI(openRouterConfig)
+  : {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
+              {
+                message: {
+                  content: 'AI functionality is disabled because no OpenRouter/OpenAI API key is configured. Set OPENROUTER_API_KEY to enable live responses.'
+                }
+              }
+            ]
+          })
+        }
+      }
+    };
 
 // Database migration function
 function runDatabaseMigrations(db) {
