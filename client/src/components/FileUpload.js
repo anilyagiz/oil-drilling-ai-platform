@@ -338,6 +338,7 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
                 onClick={() => {
                   setWellMode('existing');
                   setWellError(null);
+                  setWellSuccess(null);
                 }}
                 className={`px-3 py-1 text-sm rounded-lg border ${wellMode === 'existing' ? 'bg-primary-500 text-white border-primary-500' : 'border-gray-300 dark:border-gray-500 text-gray-600 dark:text-gray-300'}`}
               >
@@ -349,6 +350,7 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
                   setWellMode('new');
                   setSelectedWellId('');
                   setWellError(null);
+                  setWellSuccess(null);
                 }}
                 className={`px-3 py-1 text-sm rounded-lg border ${wellMode === 'new' ? 'bg-primary-500 text-white border-primary-500' : 'border-gray-300 dark:border-gray-500 text-gray-600 dark:text-gray-300'}`}
               >
@@ -442,11 +444,52 @@ const FileUpload = ({ wells = [], selectedWell, onSelectWell, onWellCreated, onF
                   </div>
                 </div>
               )}
+              {wellSuccess && (
+                <div className="sm:col-span-2">
+                  <div className="flex items-center p-3 rounded-lg bg-green-50 text-green-800 text-sm">
+                    <CheckCircle className="w-5 h-5 mr-2" />
+                    {wellSuccess}
+                  </div>
+                </div>
+              )}
               {wellSaving && (
                 <div className="sm:col-span-2 text-sm text-primary-600 flex items-center">
                   <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Creating well...
                 </div>
               )}
+              <div className="sm:col-span-2 flex flex-wrap gap-3 mt-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await createWell();
+                    } catch (error) {
+                      if (error?.message === 'validation') {
+                        return;
+                      }
+                    }
+                  }}
+                  className="inline-flex items-center px-4 py-2 bg-primary-500 text-white text-sm font-medium rounded-lg shadow-sm hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-60 disabled:cursor-not-allowed"
+                  disabled={wellSaving}
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create Well
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewWellName('');
+                    setNewWellDepth('');
+                    setNewWellStatus('Active');
+                    setWellError(null);
+                    setWellSuccess(null);
+                  }}
+                  className="inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600"
+                  disabled={wellSaving}
+                >
+                  Reset
+                </button>
+              </div>
             </div>
           )}
         </div>
