@@ -361,7 +361,7 @@ app.get('/api/health', (req, res) => {
     version: process.env.npm_package_version || '1.0.0',
     services: {
       database: 'OK',
-      openrouter: 'OK'
+      openrouter: AI_ENABLED ? 'OK' : 'NOT_CONFIGURED'
     }
   };
 
@@ -372,18 +372,39 @@ app.get('/api/health', (req, res) => {
       healthCheck.status = 'DEGRADED';
     }
 
-    // Check OpenAI API (basic check)
-    if (!openRouterConfig.apiKey || openRouterConfig.apiKey === 'your-openai-api-key-here') {
-      healthCheck.services.openrouter = 'NOT_CONFIGURED';
-      if (healthCheck.status === 'OK') {
-        healthCheck.status = 'DEGRADED';
-      }
-    }
-
     const statusCode = healthCheck.status === 'OK' ? 200 : 503;
     res.status(statusCode).json(healthCheck);
   });
 });
+
+function normalizePercentageValue(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') {
+    return { valid: true, value: null };
+  }
+
+  const numeric = Number(rawValue);
+
+  if (!Number.isFinite(numeric)) {
+    return { valid: false, error: 'must be a numeric value' };
+  }
+
+  if (numeric < 0) {
+    return { valid: false, error: 'must be a non-negative number' };
+  }
+
+  if (numeric <= 1) {
+    return { valid: true, value: numeric };
+  }
+
+  if (numeric <= 100) {
+    return { valid: true, value: numeric / 100 };
+  }
+
+  return {
+    valid: false,
+    error: 'must be between 0 and 1, or 0 and 100 when expressed as a percentage'
+  };
+}
 
 // Excel data validation function
 function validateExcelStructure(data) {
@@ -408,37 +429,50 @@ function validateExcelStructure(data) {
     const rowNum = index + 1;
     
     // Validate DEPTH (should be numeric and positive)
-    if (row.DEPTH !== null && row.DEPTH !== undefined) {
-      if (typeof row.DEPTH !== 'number' || row.DEPTH < 0) {
+    if (row.DEPTH !== null && row.DEPTH !== undefined && row.DEPTH !== '') {
+      const depthValue = Number(row.DEPTH);
+      if (!Number.isFinite(depthValue) || depthValue < 0) {
         errors.push(`Row ${rowNum}: DEPTH must be a positive number`);
       }
     }
 
-    // Validate percentage columns (should be between 0 and 1)
     const percentageColumns = ['%SH', '%SS', '%LS', '%DOL', '%ANH', '%Coal', '%Salt'];
+    const normalizedPercentages = {};
+    let hasPercentData = false;
+
     percentageColumns.forEach(col => {
-      if (row[col] !== null && row[col] !== undefined) {
-        if (typeof row[col] !== 'number' || row[col] < 0 || row[col] > 1) {
-          errors.push(`Row ${rowNum}: ${col} must be a number between 0 and 1`);
+      const result = normalizePercentageValue(row[col]);
+      if (!result.valid) {
+        errors.push(`Row ${rowNum}: ${col} ${result.error}`);
+        return;
+      }
+
+      if (result.value !== null) {
+        normalizedPercentages[col] = result.value;
+        if (result.value > 0) {
+          hasPercentData = true;
         }
+      } else {
+        normalizedPercentages[col] = 0;
       }
     });
 
+    if (hasPercentData) {
+      const rockCompositionSum = percentageColumns.reduce((sum, col) => sum + (normalizedPercentages[col] || 0), 0);
+      if (Math.abs(rockCompositionSum - 1) > 0.05) {
+        errors.push(`Row ${rowNum}: Rock composition percentages should sum to approximately 100%. Current total: ${(rockCompositionSum * 100).toFixed(1)}%`);
+      }
+    }
+
     // Validate DT and GR (should be numeric)
     ['DT', 'GR'].forEach(col => {
-      if (row[col] !== null && row[col] !== undefined) {
-        if (typeof row[col] !== 'number') {
+      if (row[col] !== null && row[col] !== undefined && row[col] !== '') {
+        const value = Number(row[col]);
+        if (!Number.isFinite(value)) {
           errors.push(`Row ${rowNum}: ${col} must be a number`);
         }
       }
     });
-
-    // Check if rock composition percentages sum to approximately 1 (allowing for small rounding errors)
-    const rockCompositionSum = (row['%SH'] || 0) + (row['%SS'] || 0) + (row['%LS'] || 0) + 
-                              (row['%DOL'] || 0) + (row['%ANH'] || 0) + (row['%Coal'] || 0) + (row['%Salt'] || 0);
-    if (Math.abs(rockCompositionSum - 1) > 0.01) {
-      errors.push(`Row ${rowNum}: Rock composition percentages should sum to approximately 1.0 (current sum: ${rockCompositionSum.toFixed(3)})`);
-    }
   });
 
   return {
@@ -452,17 +486,25 @@ function validateExcelStructure(data) {
 // Enhanced Excel data processing function
 function processExcelData(data) {
   return data.map((row, index) => {
+    const normalizeOrZero = (value) => {
+      const result = normalizePercentageValue(value);
+      if (!result.valid) {
+        return 0;
+      }
+      return result.value ?? 0;
+    };
+
     const processedRow = {
-      DEPTH: parseFloat(row.DEPTH) || null,
-      SH: parseFloat(row['%SH']) || 0,     // Shale percentage
-      SS: parseFloat(row['%SS']) || 0,     // Sandstone percentage
-      LS: parseFloat(row['%LS']) || 0,     // Limestone percentage
-      DOL: parseFloat(row['%DOL']) || 0,   // Dolomite percentage
-      ANH: parseFloat(row['%ANH']) || 0,   // Anhydrite percentage
-      Coal: parseFloat(row['%Coal']) || 0, // Coal percentage
-      Salt: parseFloat(row['%Salt']) || 0, // Salt percentage
-      DT: parseFloat(row.DT) || null,      // Delta Time
-      GR: parseFloat(row.GR) || null,      // Gamma Ray
+      DEPTH: row.DEPTH !== null && row.DEPTH !== undefined && row.DEPTH !== '' ? parseFloat(row.DEPTH) : null,
+      SH: normalizeOrZero(row['%SH']),     // Shale percentage (normalized 0-1)
+      SS: normalizeOrZero(row['%SS']),     // Sandstone percentage (normalized 0-1)
+      LS: normalizeOrZero(row['%LS']),     // Limestone percentage (normalized 0-1)
+      DOL: normalizeOrZero(row['%DOL']),   // Dolomite percentage (normalized 0-1)
+      ANH: normalizeOrZero(row['%ANH']),   // Anhydrite percentage (normalized 0-1)
+      Coal: normalizeOrZero(row['%Coal']), // Coal percentage (normalized 0-1)
+      Salt: normalizeOrZero(row['%Salt']), // Salt percentage (normalized 0-1)
+      DT: row.DT !== null && row.DT !== undefined && row.DT !== '' ? parseFloat(row.DT) : null,      // Delta Time
+      GR: row.GR !== null && row.GR !== undefined && row.GR !== '' ? parseFloat(row.GR) : null,      // Gamma Ray
       rowIndex: index + 1
     };
 
